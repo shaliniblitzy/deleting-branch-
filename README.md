@@ -1,14 +1,4 @@
-# Node.js Hello World HTTP Server
-
-![Node.js Version](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen) ![License](https://img.shields.io/badge/license-MIT-blue)
-
-A simple Node.js HTTP server application that exposes a single REST endpoint `/hello` which returns "Hello world" to clients. This project serves as a minimal, functional example of a Node.js web service that can be used as a learning tool or starter template.
-
-## Features
-
-- **HTTP Server**: Implemented using Node.js core `http` module without external dependencies
-- **REST Endpoint**: Single `/hello` endpoint returning "Hello world" text
-- **Health Check**: `/health` endpoint for monitoring application status
+alth` endpoint for monitoring application status
 - **Server Configuration**: Configurable port using environment variables
 - **Error Handling**: Proper handling for invalid routes and methods
 
@@ -144,4 +134,4 @@ Contributions are welcome! Please see [Contributing Guidelines](docs/CONTRIBUTIN
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
