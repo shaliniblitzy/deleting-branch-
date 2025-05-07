@@ -1,0 +1,12 @@
+{
+  "watch": ["src/", "index.js", "scripts/"],
+  "ignore": ["node_modules/", "tests/", "coverage/", "*.test.js", "*.spec.js"],
+  "ext": "js,json",
+  "exec": "node index.js",
+  "env": {
+    "NODE_ENV": "development"
+  },
+  "delay": 1000,
+  "verbose": true,
+  "restartable": "rs"
+}

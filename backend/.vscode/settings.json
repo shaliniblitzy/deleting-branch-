@@ -1,0 +1,65 @@
+{
+  "editor": {
+    "formatOnSave": true,
+    "formatOnPaste": false,
+    "tabSize": 2,
+    "insertSpaces": true,
+    "detectIndentation": false,
+    "rulers": [100],
+    "codeActionsOnSave": {
+      "source.fixAll.eslint": true
+    },
+    "defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "files": {
+    "exclude": {
+      "**/.git": true,
+      "**/node_modules": true,
+      "**/coverage": true,
+      "**/.DS_Store": true
+    },
+    "eol": "\n",
+    "insertFinalNewline": true,
+    "trimTrailingWhitespace": true
+  },
+  "javascript": {
+    "format": {
+      "semicolons": true,
+      "insertSpaceAfterFunctionKeywordForAnonymousFunctions": true,
+      "insertSpaceBeforeFunctionParenthesis": false
+    },
+    "updateImportsOnFileMove": "always",
+    "preferences": {
+      "quoteStyle": "single",
+      "importModuleSpecifierPreference": "relative"
+    },
+    "suggest": {
+      "completeFunctionCalls": true
+    }
+  },
+  "eslint": {
+    "enable": true,
+    "run": "onSave",
+    "validate": ["javascript"]
+  },
+  "jest": {
+    "enableInlineErrorMessages": true,
+    "autoEnable": true,
+    "showCoverageOnLoad": false
+  },
+  "terminal": {
+    "integrated": {
+      "scrollback": 10000
+    }
+  },
+  "search": {
+    "exclude": {
+      "**/node_modules": true,
+      "**/coverage": true,
+      "**/.git": true
+    }
+  },
+  "explorer": {
+    "sortOrder": "type"
+  }
+}

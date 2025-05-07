@@ -1,0 +1,187 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Launch Server",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/backend/index.js",
+      "cwd": "${workspaceFolder}/backend",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "skipFiles": ["<node_internals>/**"],
+      "env": {
+        "NODE_ENV": "development",
+        "PORT": "3000"
+      },
+      "outFiles": ["${workspaceFolder}/backend/**/*.js"],
+      "restart": true,
+      "sourceMaps": true,
+      "presentation": {
+        "hidden": false,
+        "group": "server",
+        "order": 1
+      }
+    },
+    {
+      "name": "Launch with Nodemon",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "nodemon",
+      "program": "${workspaceFolder}/backend/index.js",
+      "cwd": "${workspaceFolder}/backend",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "skipFiles": ["<node_internals>/**"],
+      "env": {
+        "NODE_ENV": "development",
+        "PORT": "3000"
+      },
+      "restart": true,
+      "sourceMaps": true,
+      "presentation": {
+        "hidden": false,
+        "group": "server",
+        "order": 2
+      }
+    },
+    {
+      "name": "Run Current Test File",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/backend/node_modules/jest/bin/jest.js",
+      "args": ["${relativeFile}", "--runInBand", "--detectOpenHandles"],
+      "cwd": "${workspaceFolder}/backend",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "skipFiles": ["<node_internals>/**"],
+      "env": {
+        "NODE_ENV": "test"
+      },
+      "presentation": {
+        "hidden": false,
+        "group": "tests",
+        "order": 1
+      }
+    },
+    {
+      "name": "Run Unit Tests",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/backend/node_modules/jest/bin/jest.js",
+      "args": ["tests/unit", "--runInBand", "--detectOpenHandles"],
+      "cwd": "${workspaceFolder}/backend",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "skipFiles": ["<node_internals>/**"],
+      "env": {
+        "NODE_ENV": "test"
+      },
+      "presentation": {
+        "hidden": false,
+        "group": "tests",
+        "order": 2
+      }
+    },
+    {
+      "name": "Run Integration Tests",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/backend/node_modules/jest/bin/jest.js",
+      "args": ["tests/integration", "--runInBand", "--detectOpenHandles"],
+      "cwd": "${workspaceFolder}/backend",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "skipFiles": ["<node_internals>/**"],
+      "env": {
+        "NODE_ENV": "test"
+      },
+      "presentation": {
+        "hidden": false,
+        "group": "tests",
+        "order": 3
+      }
+    },
+    {
+      "name": "Run E2E Tests",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/backend/node_modules/jest/bin/jest.js",
+      "args": ["tests/e2e", "--runInBand", "--detectOpenHandles"],
+      "cwd": "${workspaceFolder}/backend",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "skipFiles": ["<node_internals>/**"],
+      "env": {
+        "NODE_ENV": "test"
+      },
+      "presentation": {
+        "hidden": false,
+        "group": "tests",
+        "order": 4
+      }
+    },
+    {
+      "name": "Run All Tests",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/backend/node_modules/jest/bin/jest.js",
+      "args": ["--runInBand", "--detectOpenHandles"],
+      "cwd": "${workspaceFolder}/backend",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "skipFiles": ["<node_internals>/**"],
+      "env": {
+        "NODE_ENV": "test"
+      },
+      "presentation": {
+        "hidden": false,
+        "group": "tests",
+        "order": 5
+      }
+    },
+    {
+      "name": "Run Tests with Coverage",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/backend/node_modules/jest/bin/jest.js",
+      "args": ["--coverage", "--runInBand", "--detectOpenHandles"],
+      "cwd": "${workspaceFolder}/backend",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "skipFiles": ["<node_internals>/**"],
+      "env": {
+        "NODE_ENV": "test"
+      },
+      "presentation": {
+        "hidden": false,
+        "group": "tests",
+        "order": 6
+      }
+    },
+    {
+      "name": "Attach to Process",
+      "type": "node",
+      "request": "attach",
+      "processId": "${command:PickProcess}",
+      "restart": true,
+      "skipFiles": ["<node_internals>/**"],
+      "presentation": {
+        "hidden": false,
+        "group": "advanced",
+        "order": 1
+      }
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Server + Attach",
+      "configurations": ["Launch Server", "Attach to Process"],
+      "presentation": {
+        "hidden": false,
+        "group": "advanced",
+        "order": 2
+      }
+    }
+  ]
+}
