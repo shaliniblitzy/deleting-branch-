@@ -1,2 +1,2 @@
 # deleting-branch-
-Deleting branch after triggering tech spec from blitzy
+Deleting branch after triggering tech spec from blitzy test
