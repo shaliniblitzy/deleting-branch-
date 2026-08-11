@@ -82,25 +82,41 @@ function normalisePathname(pathname) {
 }
 
 /**
- * Resolves the path a request is asking for, taken from the request target
- * exactly as the client wrote it: everything before the first `?`, so a query
- * string cannot affect routing.
+ * Resolves the path a request is asking for. The request target is handed to the
+ * `URL` constructor, resolved against the request's own `Host` header, and the
+ * `pathname` it hands back is what gets matched — which is what makes a query
+ * string irrelevant to routing, so `GET /hello?a=1` reaches the endpoint.
  *
- * The target is deliberately not handed to the `URL` constructor, whose
- * canonicalisation folds `/x/../hello`, `/./hello`, `/hello/%2e` and
- * `http://any-host/hello` into `/hello` and would give the one endpoint several
- * extra names. Nothing here can throw: a target that is not a string resolves to
- * the empty string and answers 404 like any other unknown path.
+ * The constructor also canonicalises what it parses, as the URL standard asks:
+ * `.` and `..` segments are resolved away and an absolute target such as
+ * `GET http://host/hello` yields the path inside it. Those are alternative
+ * spellings of the one endpoint rather than routes of their own — the same thing
+ * trailing-slash normalisation does for `/hello/`.
+ *
+ * A target the constructor will not parse falls back to reading the raw target
+ * directly: everything before the first `?`. That branch is reachable — a
+ * malformed `Host` header is enough to make the constructor throw — and it is
+ * what keeps this function total: every request resolves to some path, and a
+ * path that is not {@link HELLO_PATH} answers 404 like any other.
  *
  * @param {http.IncomingMessage} req The inbound request.
  * @returns {string} The normalised path to match against {@link HELLO_PATH}.
  */
 function resolvePathname(req) {
   const target = typeof req.url === 'string' ? req.url : '';
-  const queryStart = target.indexOf('?');
-  const rawPath = queryStart === -1 ? target : target.slice(0, queryStart);
 
-  return normalisePathname(rawPath);
+  try {
+    // The `Host` header supplies only the base the target is resolved against.
+    // The pathname read back never depends on its value, so a client cannot
+    // steer routing by rewriting the header; a missing one is stood in for.
+    const { pathname } = new URL(target, `http://${req.headers.host || 'localhost'}`);
+
+    return normalisePathname(pathname);
+  } catch {
+    const queryStart = target.indexOf('?');
+
+    return normalisePathname(queryStart === -1 ? target : target.slice(0, queryStart));
+  }
 }
 
 /**
@@ -162,76 +178,6 @@ function handleRequest(req, res) {
 }
 
 /**
- * Serialises a response by hand, for the one case where the runtime hands over a
- * raw socket instead of an {@link http.ServerResponse} to write through: a status
- * line, one line per header, CRLF between them, and a blank line before the body.
- * The reason phrase is read from the runtime's own table, so the two halves of
- * the status line cannot disagree.
- *
- * @param {number} statusCode The status to report.
- * @param {{[header: string]: string | number}} headers The headers to send.
- * @param {string} body The body to send.
- * @returns {string} The complete response, ready to write to a socket.
- */
-function serialiseResponse(statusCode, headers, body) {
-  const lines = [`HTTP/1.1 ${statusCode} ${http.STATUS_CODES[statusCode]}`];
-
-  for (const [name, value] of Object.entries(headers)) {
-    lines.push(`${name}: ${value}`);
-  }
-
-  return `${lines.join('\r\n')}\r\n\r\n${body}`;
-}
-
-/**
- * Answers a `CONNECT` request — the one message {@link handleRequest} never sees,
- * because the runtime delivers it to the server's own `connect` event carrying
- * the raw socket, and a server that does not listen for it has the connection
- * closed underneath it with nothing said at all. Tunnelling is not on offer, so
- * the request is refused by the same two rules the request listener applies:
- * {@link HELLO_PATH} answers `405` with its `Allow` header, any other target
- * answers `404`. No tunnel is opened on either branch — the connection carries
- * the refusal and then ends.
- *
- * @param {http.IncomingMessage} req The inbound `CONNECT` request; its target is
- *   ordinarily an authority such as `example.com:443` rather than a path, which
- *   is one more reason it lands on the second rule.
- * @param {import('node:net').Socket} socket The raw connection, handed over
- *   without a response object to write through.
- * @returns {void}
- */
-function handleConnect(req, socket) {
-  // The socket arrives stripped of the http layer's own error handling, so a
-  // client that disappears mid-write would otherwise raise an unhandled `error`
-  // and take the process down with it. A refused tunnel whose client left is not
-  // news, so the socket is simply released.
-  socket.on('error', () => socket.destroy());
-
-  const matchesEndpoint = resolvePathname(req) === HELLO_PATH;
-  const statusCode = matchesEndpoint ? 405 : 404;
-  const body = matchesEndpoint ? METHOD_NOT_ALLOWED_BODY : NOT_FOUND_BODY;
-  const headers = buildResponseHeaders(body);
-
-  if (matchesEndpoint) {
-    headers.Allow = ALLOW_HEADER_VALUE;
-  }
-
-  // The two headers a response object would have added for us. `Connection:
-  // close` states plainly what happens next: this connection carried a refusal,
-  // not a tunnel, and it is finished.
-  headers.Date = new Date().toUTCString();
-  headers.Connection = 'close';
-
-  // Released as soon as the refusal is on the wire, exactly as the `http` module
-  // does after a `Connection: close` response. Waiting for the client to close
-  // its own half instead would hold the socket, and the event loop with it, open
-  // for as long as the client felt like it.
-  socket.end(serialiseResponse(statusCode, headers, body), () => {
-    socket.destroy();
-  });
-}
-
-/**
  * Creates a new, fully wired but **unbound** HTTP server: a factory rather than
  * a singleton, so nothing is bound until the caller invokes `listen`. That keeps
  * this module import-safe and lets a test bind an ephemeral port while a
@@ -240,17 +186,7 @@ function handleConnect(req, socket) {
  * @returns {http.Server} A server that answers `/hello`, not yet listening.
  */
 function createServer() {
-  const server = http.createServer(handleRequest);
-
-  // Two listeners, because a client has two ways of reaching a server: the
-  // request listener answers every message the parser turns into a request, and
-  // this one answers the `CONNECT` the runtime routes elsewhere, which would
-  // otherwise have its connection closed with no response at all. Both are
-  // attached to the server being handed out, so requiring this module still
-  // binds nothing and does nothing.
-  server.on('connect', handleConnect);
-
-  return server;
+  return http.createServer(handleRequest);
 }
 
 module.exports = {

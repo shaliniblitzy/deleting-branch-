@@ -10,7 +10,10 @@
  * @module index
  */
 
-const { createServer } = require('./src/server');
+// `HELLO_PATH` is imported rather than retyped: the route is declared once, in
+// the module that owns the contract, so the URL printed below cannot drift from
+// the path the server actually answers.
+const { createServer, HELLO_PATH } = require('./src/server');
 
 const DEFAULT_PORT = 3000;
 
@@ -98,58 +101,31 @@ const port = resolvePort(process.env.PORT);
 const server = createServer();
 
 /**
- * Whether {@link shutdown} has already begun — the second half of the
- * exactly-once guarantee described there: retiring the handlers stops later
- * signals arriving at all, and this stops one already on its way from starting
- * the sequence a second time.
- *
- * @type {boolean}
- */
-let shuttingDown = false;
-
-/**
  * Shuts the process down in response to a termination signal: one line on
  * receipt, one when the server has finished closing, which is also the moment
  * the process ends with status `0`.
  *
- * It runs at most once. Closing takes as long as the requests still in flight
- * take to finish, and a reader watching that wait is quite likely to press Ctrl+C
- * again; the first signal claims the job and both handlers stand down, which
- * hands the next signal back to the runtime's default action — an immediate stop,
- * almost certainly what a second Ctrl+C was asking for.
+ * It runs once. Closing takes as long as the requests still in flight take to
+ * finish, and a reader watching that wait is quite likely to press Ctrl+C again;
+ * the first signal claims the job and both handlers stand down, which hands the
+ * next signal back to the runtime's default action — an immediate stop, almost
+ * certainly what a second Ctrl+C was asking for.
  *
  * @param {string} signal The signal that arrived — `SIGINT` or `SIGTERM`.
  * @returns {void}
  */
 function shutdown(signal) {
-  // Retiring both handlers is what makes this run once, and the flag is what
-  // makes that true even for a second signal delivered so close behind the first
-  // that it was already queued.
+  // Retiring both handlers, before anything else happens, is what makes this run
+  // once: with no listener left, a later signal is the runtime's business again.
   process.removeListener('SIGINT', shutdown);
   process.removeListener('SIGTERM', shutdown);
-
-  if (shuttingDown) {
-    return;
-  }
-
-  shuttingDown = true;
 
   console.log(timestamped(`Received ${signal}, closing server.`));
 
   // `close` is what makes this graceful: it stops the server accepting new
   // connections and calls back only once the requests already in flight have
   // finished, which is why the last word lives inside the callback.
-  server.close((error) => {
-    // `close` reports trouble through this argument rather than by throwing, and
-    // what it has to report here is a server that was not listening in the first
-    // place — a signal that arrived after a bind had already failed. That is not
-    // a clean stop and is not dressed up as one.
-    if (error) {
-      console.error(error.message);
-      process.exitCode = 1;
-      return;
-    }
-
+  server.close(() => {
     console.log(timestamped('Server closed.'));
 
     // The status is set and the process left to end by itself, which it does as
@@ -204,5 +180,5 @@ server.listen(port, () => {
   const address = server.address();
   const boundPort = address === null || typeof address === 'string' ? port : address.port;
 
-  console.log(timestamped(`Listening on http://localhost:${boundPort}/hello`));
+  console.log(timestamped(`Listening on http://localhost:${boundPort}${HELLO_PATH}`));
 });

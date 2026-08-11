@@ -39,17 +39,6 @@ found 0 vulnerabilities
 
 The command also writes `package-lock.json` if that file is missing, which pins the install state so `npm ci` is reproducible. Since there is no dependency to install, you can skip this step entirely and run the server directly from a fresh clone.
 
-Skipping it is the safer default too, for a reason that has nothing to do with this project's own code. This project's dependency tree is empty, but the tool you type `npm` into has a tree of its own, and that one is not: the npm bundled with Node.js v24.19.0 is npm 11.17.0, which ships `tar` 7.5.16 and `brace-expansion` 5.0.6. Both carry published denial-of-service advisories. A crafted "gzip bomb" archive can exhaust CPU and disk space through `tar` before 7.5.19 (`CVE-2026-59873`), and a crafted brace or glob pattern can block the event loop or crash the process out of memory through `brace-expansion` before 5.0.8 (`CVE-2026-13149` and `CVE-2026-14257`).
-
-Nothing in this document reaches either one: there is no dependency archive to unpack, and none of the commands here contains a brace or glob pattern. Keeping it that way costs nothing — start the server with `node index.js` and run the suite with `node --test`, both of which work from a fresh clone without installing anything; do not ask this npm to install or unpack an archive you do not trust; and do not hand it a brace or glob pattern that came from a source you do not trust. The exposure goes away once your toolchain bundles `tar` 7.5.19 or later and `brace-expansion` 5.0.8 or later, which is something a newer npm brings with it. To see what your own npm carries:
-
-```bash
-node -p "require('$(npm root -g)/npm/node_modules/tar/package.json').version"
-node -p "require('$(npm root -g)/npm/node_modules/brace-expansion/package.json').version"
-```
-
-On the toolchain this was written against those print `7.5.16` and `5.0.6`. `npm root -g` is simply where npm keeps global packages; if your npm was installed by some other means its layout may differ, and the commands will report a missing module rather than a version.
-
 To see the empty dependency tree for yourself:
 
 ```bash
@@ -77,7 +66,7 @@ node index.js
 
 Both run the same command, because `npm start` is defined as `node index.js`.
 
-Prefer the direct `node index.js` form in signal-sensitive contexts — a process manager, a container entrypoint, or a script that sends `SIGTERM`. Ctrl+C is safe either way, because a terminal delivers the interrupt to every process in the foreground group, the server included, and the shutdown below then happens as documented. The case to avoid is a supervisor that signals only the process it started: measured here on npm 11.17.0, a `SIGTERM` sent to the `npm start` process ends npm and leaves `node index.js` running — orphaned, still holding the port, and never told to stop — while a `SIGINT` sent there is ignored outright. Neither prints the shutdown lines, because the server never sees the signal. Running Node directly removes the middleman and lets the server receive the signal itself.
+Prefer the direct `node index.js` form in signal-sensitive contexts — a process manager, a container entrypoint, or a script that sends `SIGTERM`. The reason is that npm does not wait for the child process it started to finish stopping, so stopping the server through the npm script is not something you can rely on. Ctrl+C is safe either way, because a terminal delivers the interrupt to every process in the foreground group, the server included, and the shutdown below then happens as documented. The case to avoid is a supervisor that signals only the process it started: measured here on npm 11.17.0, a `SIGTERM` sent to the `npm start` process ends npm without waiting and leaves `node index.js` running — orphaned, still holding the port, and never told to stop — while a `SIGINT` sent there is ignored outright. Neither prints the shutdown lines, because the server never sees the signal. Running Node directly removes the middleman and lets the server receive the signal itself.
 
 On a successful start the server prints a single line:
 
@@ -97,8 +86,6 @@ Press Ctrl+C to stop. The shutdown is graceful and reports two lines before the 
 Closing waits for the requests already in flight, so if any are still running the wait is real: the second line, and the exit that goes with it, follow once those requests have finished. Both lines are written before the process ends — the server sets its exit status and lets the process finish on its own rather than tearing it down mid-sentence — so you see them even when the output is piped into another command or captured to a file.
 
 That wait is also why a second Ctrl+C stops the server immediately: the first signal takes charge of the shutdown and both handlers then stand down, which hands any further signal back to the operating system's default action. So one Ctrl+C asks the server to finish what it is doing, and a second insists. The trade is the one you would expect — an immediate stop cuts off whatever was still in flight, and prints no second line.
-
-Those two lines are what a shutdown of a running server prints, and the exception is worth naming: if the server never reached the point of listening, closing it is not a clean stop and is not reported as one — the runtime's own explanation is printed in place of the second line and the process ends with status `1`.
 
 ## Verifying it works
 
@@ -164,19 +151,14 @@ Keep-Alive: timeout=5
 | `GET /hello/`, `GET /hello//`, `GET /hello?a=1` | `200 OK` | as above | `Hello world` — trailing slashes are normalised away and a query string does not affect routing |
 | `GET /`, or any other path | `404 Not Found` | the same four headers, with `Content-Length: 9` | `Not Found` |
 | `POST`, `PUT`, `DELETE`, or any other method on `/hello` | `405 Method Not Allowed` | the same four headers, plus `Allow: GET, HEAD`, with `Content-Length: 18` | `Method Not Allowed` |
-| `CONNECT /hello` | `405 Method Not Allowed` | as the row above, plus `Connection: close` | `Method Not Allowed` — then the connection closes instead of becoming a tunnel |
-| `CONNECT` to any other target, including the usual `host:port` form | `404 Not Found` | the same four headers, plus `Connection: close`, with `Content-Length: 9` | `Not Found` — then the connection closes |
 
 Those three answers are everything the endpoint has to say. Answering a disallowed method with `405` and an `Allow` header — rather than a `404` — is the distinction worth noticing: the resource does exist, just not for that method.
 
-`CONNECT` earns its own two rows because Node.js does not deliver it like the others. It is the method that asks a server to stop serving and start tunnelling, so the runtime hands it to a separate event carrying the raw connection rather than to the request listener — and a server that ignores that event has the connection closed underneath it with nothing said at all. This server answers it instead, by the same two rules as everything else: `/hello` gets the `405` and its `Allow` header, any other target gets the `404`, and the connection then closes, because a refusal is the whole of that conversation. No tunnel is ever opened, in either case.
-
-Try the failure cases yourself. The third points `curl` at the server as if it were a proxy, which is how `curl` is made to send a `CONNECT`; it prints `< HTTP/1.1 404 Not Found` followed by `CONNECT tunnel failed, response 404`, and `curl` then gives up because there is no tunnel:
+Try the failure cases yourself. The first prints `404`, the second the full `405` response with its `Allow` header:
 
 ```bash
 curl -o /dev/null -w '%{http_code}\n' http://localhost:3000/
 curl -i -X POST http://localhost:3000/hello
-curl -v -x http://localhost:3000 https://example.com
 ```
 
 ## Configuration
@@ -209,6 +191,8 @@ PORT=not-a-number node index.js
 Invalid PORT "not-a-number"; falling back to 3000.
 [2026-01-01T00:00:00.000Z] Listening on http://localhost:3000/hello
 ```
+
+Those two lines arrive on different channels: the warning is written to standard error and the readiness line to standard output, so a command that captures or redirects only one of them sees only one of them.
 
 The value is quoted the way a program would quote it, and everything a terminal might act on rather than show is printed as an escape instead: a newline as `\n`, an escape character as `\u001b`, and — because those are not the only characters that can rearrange a line — the Unicode line and paragraph separators, the C1 controls and the bidirectional direction overrides as `\u2028`, `\u0085`, `\u202e` and so on. An environment variable can hold any of them, so a mistyped or mischievous setting is shown to you rather than allowed to forge a second line of output or reverse the reading order of this one. `PORT=not-a-number` is unaffected by any of that and reads exactly as above.
 
