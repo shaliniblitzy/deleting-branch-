@@ -1,137 +1,96 @@
 'use strict';
 
 /**
- * index.js — the process entry point.
- *
- * This file binds the HTTP contract to the operating system. It answers the
- * four questions that have nothing to do with the protocol itself:
- *
- * 1. Which port do we listen on?         → {@link resolvePort}
- * 2. How do we announce that we are up?  → the `listen` callback
- * 3. What if the port cannot be bound?   → the `error` listener
- * 4. How do we stop cleanly?             → {@link shutdown}
- *
- * Everything the server actually *says* — the one route it recognises, the
- * bytes it returns and the headers that describe them — lives in
- * `src/server.js` and is deliberately not repeated here. Keeping the protocol
- * apart from the process is what lets the test suite exercise the contract on
- * a port the operating system picks, while this file worries about ports,
- * logging and signals and nothing else.
- *
- * Start it with `node index.js`, or with `npm start`, which runs that same
- * command. Nothing needs to be installed first: the project has no
- * dependencies, and every piece used here ships with Node.js.
+ * index.js — the process entry point. It binds the HTTP contract to the
+ * operating system and owns the four concerns that are not the protocol's:
+ * which port to listen on, how readiness is announced, what a failed bind
+ * reports, and how the process stops cleanly. What the server actually *says*
+ * lives in `src/server.js`.
  *
  * @module index
  */
 
-// The only import in this file. The factory hands back a fully wired but
-// unbound server, and requiring it binds nothing and prints nothing, so
-// nothing at all happens until the `listen` call at the bottom of this file.
 const { createServer } = require('./src/server');
 
-/**
- * The port used whenever the environment does not name a usable one.
- *
- * @constant {number}
- */
 const DEFAULT_PORT = 3000;
 
-/**
- * The highest port number a TCP header can carry, and therefore the highest
- * value {@link resolvePort} will accept.
- *
- * @constant {number}
- */
 const MAX_PORT = 65535;
 
 /**
- * Matches a value that is a decimal whole number *from end to end* — one or
- * more digits and nothing else.
- *
- * The whole string has to match, because a partial reading is what makes a
- * setting like `PORT=3000abc` dangerous: a parser that stops at the first
- * character it cannot use returns the prefix it managed to read, so `3000abc`
- * becomes 3000, `1.5` becomes 1 and `1e3` becomes 1 — and the server quietly
- * binds a port nobody asked for. Insisting on digits alone also settles the
- * base beyond argument, since `Number('0x10')` is 16 but `0x10` never gets
- * that far.
- *
- * @constant {RegExp}
+ * Matches a decimal whole number from end to end. The whole string has to match,
+ * because a parser that stops at the first character it cannot use would turn
+ * `3000abc` into 3000, and `1.5`, `1e3` and `0x10` into ports nobody asked for.
  */
 const DECIMAL_WHOLE_NUMBER = /^\d+$/;
 
 /**
- * Prefixes a message with the current time in ISO-8601 form, producing lines
- * such as `[2026-01-01T00:00:00.000Z] Server closed.`
- *
- * The readiness line and the two shutdown lines are stamped here, so those
- * three cannot drift into different formats and a reader can always see when
- * each event happened. The `PORT` warning and the startup-failure messages are
- * deliberately left unstamped: each is printed before, or instead of, a
- * successful start, and each is a fixed sentence the README quotes verbatim.
- *
- * @param {string} message The text to stamp.
- * @returns {string} The message prefixed with a bracketed timestamp.
+ * The characters a terminal or log viewer may act on rather than show, and which
+ * `JSON.stringify` leaves exactly as it found them: `U+007F` and the C1 controls
+ * `U+0080`-`U+009F`, one of which, `U+0085`, is a line break in its own right;
+ * the Unicode line and paragraph separators `U+2028` and `U+2029`; and the
+ * bidirectional formatting characters, which can reverse the reading order of
+ * everything around them. {@link quoteForLog} rewrites each as a visible
+ * `\uXXXX` escape instead.
  */
+const DISPLAY_CONTROL_CHARACTERS =
+  /[\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
+
+/**
+ * Renders an environment value for the warning below: quoted, on one line, and
+ * showing exactly what was supplied. `JSON.stringify` does most of the work — the
+ * surrounding quotes, and every control character below `U+0020` — and the
+ * replacement step closes the gap described on
+ * {@link DISPLAY_CONTROL_CHARACTERS}. An ordinary value passes through untouched,
+ * so `not-a-number` still reads `"not-a-number"`.
+ *
+ * @param {string} raw The value exactly as the environment supplied it.
+ * @returns {string} A quoted, single-line rendering safe to print.
+ */
+function quoteForLog(raw) {
+  return JSON.stringify(raw).replace(
+    DISPLAY_CONTROL_CHARACTERS,
+    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`,
+  );
+}
+
 function timestamped(message) {
   return `[${new Date().toISOString()}] ${message}`;
 }
 
 /**
- * Decides which port to listen on.
+ * Decides which port to listen on: the `PORT` environment variable when the
+ * whole of it is a decimal whole number from 0 to {@link MAX_PORT}, otherwise
+ * {@link DEFAULT_PORT}. A value that cannot be used is reported rather than
+ * silently ignored, naming both the offending value and the port used instead.
  *
- * A port written into the source would make this tutorial unusable the moment
- * something else already holds 3000, so the value may be supplied through the
- * `PORT` environment variable instead — and, because anything at all can be
- * put in an environment variable, it is validated before it is trusted.
- *
- * A value is usable when the whole of it is a decimal whole number from 0 to
- * {@link MAX_PORT}. Anything else — a fraction, a stray trailing character,
- * hexadecimal or exponent notation, surrounding spaces, or a number out of
- * range — is reported rather than silently ignored: the warning names the
- * offending value and the port that will be used instead, so a mistyped
- * setting is obvious in the very first line of output.
- *
- * @param {string|undefined} raw The raw `PORT` value exactly as the
- *   environment supplied it, or `undefined` when it is not set.
+ * @param {string|undefined} raw The raw `PORT` value exactly as the environment
+ *   supplied it, or `undefined` when it is not set.
  * @returns {number} The supplied port when it is usable, otherwise
  *   {@link DEFAULT_PORT}.
  */
 function resolvePort(raw) {
-  // An absent or empty value is the ordinary case — a reader who has set
-  // nothing has done nothing wrong — so it falls back without a warning.
+  // An absent or empty value is the ordinary case, so it falls back silently.
   if (raw === undefined || raw === '') {
     return DEFAULT_PORT;
   }
 
-  // Environment variables are always text, so the value has to be read as a
-  // number — but only once the whole of it has been confirmed to be a decimal
-  // whole number. Checking first and converting second is the point: it is what
-  // makes `3000abc`, `1.5`, `1e3` and `0x10` mistakes to report rather than
-  // prefixes to salvage.
   if (DECIMAL_WHOLE_NUMBER.test(raw)) {
     const parsed = Number(raw);
 
     // Zero is accepted deliberately and means "let the operating system pick a
-    // free port", which is how a test binds without colliding with a server
-    // that is already running. Only the upper bound needs testing here, since
-    // a string of digits can be neither negative nor fractional; the
-    // safe-integer check states the remaining invariant, that a run of digits
-    // too long to be represented exactly is not a port either.
+    // free port". A run of digits can be neither negative nor fractional, so
+    // only the upper bound and exact representability remain to be checked.
     if (Number.isSafeInteger(parsed) && parsed <= MAX_PORT) {
       return parsed;
     }
   }
 
-  // The offending value is serialised rather than dropped in as-is. An
-  // environment variable can hold newlines and terminal escape sequences, and
-  // pasting those straight into the output would let a mistyped — or
-  // deliberately crafted — setting forge log lines of its own. `JSON.stringify`
-  // escapes them and supplies the surrounding double quotes this message has
-  // always shown, so an ordinary value such as `not-a-number` still reads
-  // exactly as the README documents it.
-  console.warn(`Invalid PORT ${JSON.stringify(raw)}; falling back to ${DEFAULT_PORT}.`);
+  // The offending value is escaped rather than interpolated as-is: an environment
+  // variable can hold newlines, terminal escape sequences, Unicode line
+  // separators and direction overrides that would otherwise forge log lines of
+  // their own or rewrite the order of this one. {@link quoteForLog} escapes them
+  // and supplies the required quotes.
+  console.warn(`Invalid PORT ${quoteForLog(raw)}; falling back to ${DEFAULT_PORT}.`);
   return DEFAULT_PORT;
 }
 
@@ -139,68 +98,108 @@ const port = resolvePort(process.env.PORT);
 const server = createServer();
 
 /**
- * Shuts the process down in response to a termination signal.
+ * Whether {@link shutdown} has already begun — the second half of the
+ * exactly-once guarantee described there: retiring the handlers stops later
+ * signals arriving at all, and this stops one already on its way from starting
+ * the sequence a second time.
  *
- * Two lines are printed and nothing else: one when the signal arrives, and one
- * when the server has finished closing, which is also the moment the process
- * exits with status `0`.
+ * @type {boolean}
+ */
+let shuttingDown = false;
+
+/**
+ * Shuts the process down in response to a termination signal: one line on
+ * receipt, one when the server has finished closing, which is also the moment
+ * the process ends with status `0`.
+ *
+ * It runs at most once. Closing takes as long as the requests still in flight
+ * take to finish, and a reader watching that wait is quite likely to press Ctrl+C
+ * again; the first signal claims the job and both handlers stand down, which
+ * hands the next signal back to the runtime's default action — an immediate stop,
+ * almost certainly what a second Ctrl+C was asking for.
  *
  * @param {string} signal The signal that arrived — `SIGINT` or `SIGTERM`.
  * @returns {void}
  */
 function shutdown(signal) {
+  // Retiring both handlers is what makes this run once, and the flag is what
+  // makes that true even for a second signal delivered so close behind the first
+  // that it was already queued.
+  process.removeListener('SIGINT', shutdown);
+  process.removeListener('SIGTERM', shutdown);
+
+  if (shuttingDown) {
+    return;
+  }
+
+  shuttingDown = true;
+
   console.log(timestamped(`Received ${signal}, closing server.`));
 
-  // `close` is the primitive that makes this graceful: it stops the server
-  // accepting new connections and calls back only once the connections already
-  // in flight have finished. Exiting any earlier would cut those requests off
-  // mid-response, which is why the exit lives inside the callback.
-  server.close(() => {
+  // `close` is what makes this graceful: it stops the server accepting new
+  // connections and calls back only once the requests already in flight have
+  // finished, which is why the last word lives inside the callback.
+  server.close((error) => {
+    // `close` reports trouble through this argument rather than by throwing, and
+    // what it has to report here is a server that was not listening in the first
+    // place — a signal that arrived after a bind had already failed. That is not
+    // a clean stop and is not dressed up as one.
+    if (error) {
+      console.error(error.message);
+      process.exitCode = 1;
+      return;
+    }
+
     console.log(timestamped('Server closed.'));
-    process.exit(0);
+
+    // The status is set and the process left to end by itself, which it does as
+    // soon as the event loop is empty — and the closed server was the last thing
+    // holding it open. Forcing the exit here would be a moment quicker and would
+    // risk throwing away the two lines above, because a write to a pipe is
+    // asynchronous and whatever is still queued never arrives.
+    process.exitCode = 0;
   });
 }
 
-// Registered before `listen`, because the failures it explains happen during
-// the bind attempt itself. Without this listener a busy port arrives as an
-// unhandled `error` event and an opaque stack trace — the likeliest first-run
-// surprise for someone following this tutorial.
+// Registered before `listen`, because the failures it explains happen during the
+// bind attempt itself. Without it a busy port arrives as an unhandled `error`
+// event and an opaque stack trace.
 server.on('error', (error) => {
   let message;
 
   if (error.code === 'EADDRINUSE') {
     message = `Port ${port} is already in use.`;
   } else if (error.code === 'EACCES') {
-    // Ports below 1024 are reserved for privileged processes on Unix-like
-    // systems, which is the usual reason a bind is refused outright.
     message = `Insufficient permissions to bind to port ${port}.`;
   } else {
-    // Anything unforeseen is still worth saying out loud, in the runtime's own
-    // words, rather than being swallowed.
     message = error.message;
   }
 
   console.error(message);
 
-  // A server that cannot bind has nothing left to do, and the non-zero status
-  // tells whatever started it that the startup failed.
-  process.exit(1);
+  // The status is set rather than forced, so the process ends by itself once the
+  // event loop is empty and the message above is certain to have been written: a
+  // forced exit can discard output still queued on a pipe, and a startup failure
+  // that explains nothing is the very thing this listener exists to prevent.
+  process.exitCode = 1;
+
+  // Releasing the server covers the other way this listener can be reached — an
+  // error raised while it was already listening — where the listening socket
+  // would otherwise keep the process alive with the failure unresolved.
+  server.close();
 });
 
-// One handler for both signals, because the wanted outcome is identical. They
-// differ only in where they come from: SIGINT is the interactive Ctrl+C a
-// reader types in the terminal, while SIGTERM is what process managers and
-// orchestrators send. Node hands the signal name to the listener, which is
-// what `shutdown` reports.
+// One handler for both signals, because the wanted outcome is identical: SIGINT
+// is the interactive Ctrl+C, SIGTERM is what process managers send. Both
+// registrations are retired inside it, so this pair is armed for exactly one
+// shutdown and a later signal falls through to the runtime's default action.
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
-// The single line of output on a healthy start. It carries the full URL of the
-// endpoint so it can be followed straight from the terminal instead of being
-// assembled by hand — which is why the port it names is read back from the
-// socket rather than repeated from the request. The two differ whenever the
-// request was `0`: that asks the operating system to choose a free port, and
-// only the bound address knows which one it chose.
+// The single line of output on a healthy start. It carries the full endpoint URL
+// so it can be followed straight from the terminal, and the port it names is read
+// back from the bound socket — a requested `0` asks the operating system to
+// choose, and only the bound address knows what it chose.
 server.listen(port, () => {
   const address = server.address();
   const boundPort = address === null || typeof address === 'string' ? port : address.port;
