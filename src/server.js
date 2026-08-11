@@ -25,8 +25,11 @@
 const http = require('node:http');
 
 /**
- * The single path this server recognises, written exactly as specified.
- * Every other pathname receives a 404.
+ * The single path this server recognises, written exactly as specified. It is
+ * compared against the path a client actually sent, allowing only a trailing
+ * slash and a query string as differences, so every other spelling — including
+ * ones a URL parser would fold into this one, such as `/x/../hello` — receives
+ * a 404.
  *
  * @type {string}
  */
@@ -118,12 +121,15 @@ function buildResponseHeaders(body) {
  * describe the same resource — a reader who types the URL into a browser
  * should not be punished for a stray slash.
  *
- * The root path `/` is left untouched: it is a distinct pathname that must go
- * on returning 404, and stripping its only character would leave an empty
- * string. This is a matching detail of the one supported route, not a router.
+ * The root path `/` is left untouched: it is a distinct path that must go on
+ * returning 404, and stripping its only character would leave an empty string.
+ * A trailing slash is the *only* difference this function forgives; it rewrites
+ * nothing else, which is what stops it from turning into a router.
  *
- * @param {string} pathname A URL pathname, which always begins with `/`.
- * @returns {string} The pathname with any trailing slashes removed.
+ * @param {string} pathname The path taken from the request target, ordinarily
+ *   beginning with `/` — though nothing guarantees a client sent a well-formed
+ *   one, and this function does not require it.
+ * @returns {string} The path with any trailing slashes removed.
  */
 function normalisePathname(pathname) {
   let normalised = pathname;
@@ -136,32 +142,39 @@ function normalisePathname(pathname) {
 }
 
 /**
- * Resolves the pathname a request is asking for.
+ * Resolves the path a request is asking for, taken from the request target
+ * exactly as the client wrote it.
  *
- * A raw request target may carry a query string (`/hello?a=1`), so it is
- * parsed with the `URL` constructor and only its `pathname` is used for
- * matching. Query strings are therefore irrelevant to routing, which is right
- * for a response that is a constant.
+ * A request target for an ordinary request is a path optionally followed by a
+ * query string — `/hello?a=1` — so the path is everything before the first
+ * `?`. Query strings are therefore irrelevant to routing, which is right for a
+ * response that is a constant.
  *
- * `URL` needs an absolute base, assembled here from the request's `Host`
- * header. A client is free to send a malformed `Host`, which makes the
- * constructor throw, so the parse is guarded and falls back to the portion of
- * the raw target that precedes the query string. Either way the request gets a
- * correct answer.
+ * **Why the raw target rather than the `URL` constructor.** Handing the target
+ * to `new URL(...)` looks tidier and was the obvious first choice, but URL
+ * parsing *canonicalises* what it is given: it resolves dot segments and
+ * decodes their percent-encoded spellings, and it accepts the proxy-style
+ * absolute form. `/x/../hello`, `/./hello`, `/hello/.`, `/hello/%2e` and
+ * `http://any-host/hello` all come back out of it as `/hello`, so each would
+ * have quietly become a second name for the one endpoint — and every one of
+ * them is a path this project promises answers 404. Comparing the target as
+ * sent keeps `/hello` the single accepted spelling, which is the contract this
+ * project is here to demonstrate.
+ *
+ * Nothing here can throw: there is no parser to reject a malformed target, and
+ * a target that is not a string at all — which the runtime does not produce for
+ * a parsed request, but which costs one guard to rule out — resolves to the
+ * empty string and falls through to the 404 writer like any other unknown path.
  *
  * @param {http.IncomingMessage} req The inbound request.
- * @returns {string} The normalised pathname to match against {@link HELLO_PATH}.
+ * @returns {string} The normalised path to match against {@link HELLO_PATH}.
  */
 function resolvePathname(req) {
-  let pathname;
+  const target = typeof req.url === 'string' ? req.url : '';
+  const queryStart = target.indexOf('?');
+  const rawPath = queryStart === -1 ? target : target.slice(0, queryStart);
 
-  try {
-    pathname = new URL(req.url, `http://${req.headers.host || 'localhost'}`).pathname;
-  } catch {
-    pathname = String(req.url).split('?')[0];
-  }
-
-  return normalisePathname(pathname);
+  return normalisePathname(rawPath);
 }
 
 /**
@@ -223,13 +236,22 @@ function sendMethodNotAllowed(res) {
 }
 
 /**
- * The request listener — three rules, checked in order. Every request matches
- * exactly one of them, so there is no path on which the server fails to
- * respond:
+ * The request listener — three rules, checked in order. Every request the HTTP
+ * parser hands over matches exactly one of them, so no request this server
+ * accepts goes unanswered:
  *
  * 1. wrong path                → `404 Not Found`
  * 2. right path, wrong method  → `405 Method Not Allowed` (plus `Allow`)
  * 3. right path, right method  → `200 OK` with the payload
+ *
+ * Those three answers are the whole of what this server says. What the rules
+ * cannot cover is a message the parser never turns into a request in the first
+ * place: a missing or unusable `Host` header, a malformed request line, headers
+ * larger than the runtime allows, or a client that stops speaking mid-request.
+ * Node.js answers those itself — `400`, `431`, or a timeout — before routing
+ * begins, and those built-in protections are deliberately left untouched,
+ * because they are what stops a half-sent request from occupying the server
+ * indefinitely.
  *
  * Nothing else happens here. No request body is read, no query parameter
  * changes the outcome, no file is touched and nothing is evaluated, so whole
@@ -243,7 +265,10 @@ function sendMethodNotAllowed(res) {
 function handleRequest(req, res) {
   const pathname = resolvePathname(req);
 
-  // Rule 1 — `/hello` is the only resource this server exposes.
+  // Rule 1 — `/hello` is the only resource this server exposes, and the only
+  // spelling of it that is accepted. An exact comparison is the whole guarantee:
+  // anything the client asked for that is not this string, however close it
+  // looks, is a path this server does not have.
   if (pathname !== HELLO_PATH) {
     sendNotFound(res);
     return;
@@ -281,10 +306,7 @@ function createServer() {
 
 module.exports = {
   createServer,
-  handleRequest,
   HELLO_PATH,
   HELLO_BODY,
   ALLOWED_METHODS,
-  NOT_FOUND_BODY,
-  METHOD_NOT_ALLOWED_BODY,
 };

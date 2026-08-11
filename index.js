@@ -38,12 +38,38 @@ const { createServer } = require('./src/server');
 const DEFAULT_PORT = 3000;
 
 /**
+ * The highest port number a TCP header can carry, and therefore the highest
+ * value {@link resolvePort} will accept.
+ *
+ * @constant {number}
+ */
+const MAX_PORT = 65535;
+
+/**
+ * Matches a value that is a decimal whole number *from end to end* — one or
+ * more digits and nothing else.
+ *
+ * The whole string has to match, because a partial reading is what makes a
+ * setting like `PORT=3000abc` dangerous: a parser that stops at the first
+ * character it cannot use returns the prefix it managed to read, so `3000abc`
+ * becomes 3000, `1.5` becomes 1 and `1e3` becomes 1 — and the server quietly
+ * binds a port nobody asked for. Insisting on digits alone also settles the
+ * base beyond argument, since `Number('0x10')` is 16 but `0x10` never gets
+ * that far.
+ *
+ * @constant {RegExp}
+ */
+const DECIMAL_WHOLE_NUMBER = /^\d+$/;
+
+/**
  * Prefixes a message with the current time in ISO-8601 form, producing lines
  * such as `[2026-01-01T00:00:00.000Z] Server closed.`
  *
- * Every line this file prints is stamped here, so the startup line and the
- * shutdown lines cannot drift into different formats and a reader can always
- * see when each event happened.
+ * The readiness line and the two shutdown lines are stamped here, so those
+ * three cannot drift into different formats and a reader can always see when
+ * each event happened. The `PORT` warning and the startup-failure messages are
+ * deliberately left unstamped: each is printed before, or instead of, a
+ * successful start, and each is a fixed sentence the README quotes verbatim.
  *
  * @param {string} message The text to stamp.
  * @returns {string} The message prefixed with a bracketed timestamp.
@@ -60,9 +86,12 @@ function timestamped(message) {
  * `PORT` environment variable instead — and, because anything at all can be
  * put in an environment variable, it is validated before it is trusted.
  *
- * A value that cannot be used is reported rather than silently ignored: the
- * warning names the offending value and the port that will be used instead,
- * so a mistyped setting is obvious in the very first line of output.
+ * A value is usable when the whole of it is a decimal whole number from 0 to
+ * {@link MAX_PORT}. Anything else — a fraction, a stray trailing character,
+ * hexadecimal or exponent notation, surrounding spaces, or a number out of
+ * range — is reported rather than silently ignored: the warning names the
+ * offending value and the port that will be used instead, so a mistyped
+ * setting is obvious in the very first line of output.
  *
  * @param {string|undefined} raw The raw `PORT` value exactly as the
  *   environment supplied it, or `undefined` when it is not set.
@@ -76,21 +105,33 @@ function resolvePort(raw) {
     return DEFAULT_PORT;
   }
 
-  // Environment variables are always text, so the value has to be parsed.
-  // Base 10 is stated explicitly rather than left to be inferred, and a value
-  // that does not begin with digits parses to NaN.
-  const parsed = Number.parseInt(raw, 10);
+  // Environment variables are always text, so the value has to be read as a
+  // number — but only once the whole of it has been confirmed to be a decimal
+  // whole number. Checking first and converting second is the point: it is what
+  // makes `3000abc`, `1.5`, `1e3` and `0x10` mistakes to report rather than
+  // prefixes to salvage.
+  if (DECIMAL_WHOLE_NUMBER.test(raw)) {
+    const parsed = Number(raw);
 
-  // A port has to be a whole number no larger than 65535, the largest value
-  // the TCP port field can hold. Zero is accepted and means "let the operating
-  // system pick a free port", which is how a test can bind without colliding
-  // with a server that is already running. NaN is not an integer, so this one
-  // condition rejects both an unparseable value and an out-of-range one.
-  if (Number.isInteger(parsed) && parsed >= 0 && parsed <= 65535) {
-    return parsed;
+    // Zero is accepted deliberately and means "let the operating system pick a
+    // free port", which is how a test binds without colliding with a server
+    // that is already running. Only the upper bound needs testing here, since
+    // a string of digits can be neither negative nor fractional; the
+    // safe-integer check states the remaining invariant, that a run of digits
+    // too long to be represented exactly is not a port either.
+    if (Number.isSafeInteger(parsed) && parsed <= MAX_PORT) {
+      return parsed;
+    }
   }
 
-  console.warn(`Invalid PORT "${raw}"; falling back to ${DEFAULT_PORT}.`);
+  // The offending value is serialised rather than dropped in as-is. An
+  // environment variable can hold newlines and terminal escape sequences, and
+  // pasting those straight into the output would let a mistyped — or
+  // deliberately crafted — setting forge log lines of its own. `JSON.stringify`
+  // escapes them and supplies the surrounding double quotes this message has
+  // always shown, so an ordinary value such as `not-a-number` still reads
+  // exactly as the README documents it.
+  console.warn(`Invalid PORT ${JSON.stringify(raw)}; falling back to ${DEFAULT_PORT}.`);
   return DEFAULT_PORT;
 }
 
@@ -99,6 +140,10 @@ const server = createServer();
 
 /**
  * Shuts the process down in response to a termination signal.
+ *
+ * Two lines are printed and nothing else: one when the signal arrives, and one
+ * when the server has finished closing, which is also the moment the process
+ * exits with status `0`.
  *
  * @param {string} signal The signal that arrived — `SIGINT` or `SIGTERM`.
  * @returns {void}
@@ -152,7 +197,13 @@ process.on('SIGTERM', shutdown);
 
 // The single line of output on a healthy start. It carries the full URL of the
 // endpoint so it can be followed straight from the terminal instead of being
-// assembled by hand.
+// assembled by hand — which is why the port it names is read back from the
+// socket rather than repeated from the request. The two differ whenever the
+// request was `0`: that asks the operating system to choose a free port, and
+// only the bound address knows which one it chose.
 server.listen(port, () => {
-  console.log(timestamped(`Listening on http://localhost:${port}/hello`));
+  const address = server.address();
+  const boundPort = address === null || typeof address === 'string' ? port : address.port;
+
+  console.log(timestamped(`Listening on http://localhost:${boundPort}/hello`));
 });
