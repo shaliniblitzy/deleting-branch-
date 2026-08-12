@@ -6,7 +6,7 @@ The source is small and commented, so you can read the HTTP mechanics rather tha
 
 ## Features
 
-- One endpoint, `/hello`, and nothing else. The path is compared against what the client actually sent, so every other path answers `404`.
+- One endpoint, `/hello`, and nothing else. The path is compared against what the client actually sent, so every other request target answers `404` — including the other ways a URL can be written to mean the same place, such as `/x/../hello`, `/./hello`, `/hello/%2e` or an absolute `http://host/hello`. Trailing slashes are the single documented exception.
 - The response body is exactly `Hello world` — 11 bytes of `text/plain`, with no trailing newline.
 - Zero dependencies. Both `dependencies` and `devDependencies` are empty, so no dependency package is declared or downloaded — and on the environment this project was verified on, installing created no `node_modules` directory at all.
 - Defined answers for the cases even a single-route server has to handle: `404` for an unknown path, and `405` with an `Allow` header for a disallowed method.
@@ -20,6 +20,18 @@ The source is small and commented, so you can read the HTTP mechanics rather tha
 - **npm**, which ships with Node.js, to run the `start` and `test` scripts.
 
 That range is a compatibility floor, not a security baseline, and the two are not the same thing. `>=24.0.0` admits every patch release in the line, including ones that later security releases have superseded, and `engines` is advice rather than a rule: npm prints an `EBADENGINE` warning and installs anyway unless `engine-strict` is turned on, `npm start` does not check the field at all, and neither does `node index.js`. So run the newest patch release of the Node.js 24 LTS line, not merely a version the range accepts. When this was written — 11 August 2026 — that was **v24.19.0**, released 3 August 2026: the version named above, and the one every command and every output below was verified against. The line is supported until April 2028. `node --version` tells you what you are running, and the [Node.js releases page](https://nodejs.org/en/about/previous-releases) tells you what the current patch release is.
+
+npm deserves the same scrutiny, and one distinction there is easy to miss: `npm audit` reports on *this project's* dependency tree — which is empty — and not on the npm CLI's own bundled dependencies, which are separate software with advisories of their own. Ask your installation what it ships:
+
+```bash
+npm --version
+node -p "require('$(npm root -g)/npm/node_modules/tar/package.json').version"
+node -p "require('$(npm root -g)/npm/node_modules/brace-expansion/package.json').version"
+```
+
+Those paths sit inside npm's own installation, so they resolve only while npm bundles those two libraries. Checked here on 12 August 2026 they printed npm **11.17.0** with **tar 7.5.16** and **brace-expansion 5.0.6**, and both libraries carry published denial-of-service advisories at those versions: tar is affected through 7.5.18 (CVE-2026-59873, fixed in 7.5.19), and brace-expansion through 5.0.7 (CVE-2026-14257, fixed in 5.0.8 — a fix that CVE-2026-69152 then showed to be incomplete). Compare what your own installation prints against the current advisories rather than against those numbers: the fixed versions move, and a newer npm is how you pick them up.
+
+None of it is reachable from this project. tar unpacks downloaded package archives and brace-expansion expands glob patterns; with zero dependencies there is no archive to unpack, and neither script passes a glob to anything. If you would rather keep npm out of it altogether, `node index.js` and `node --test` are the literal definitions of `npm start` and `npm test`, need no install step, and are shown alongside the npm commands throughout this document.
 
 The project itself needs nothing else: no database, no build step, and no third-party packages. The examples below are written for a POSIX-compatible shell and use `curl` to make requests.
 
@@ -149,16 +161,23 @@ Keep-Alive: timeout=5
 | `GET /hello` | `200 OK` | `Content-Type: text/plain; charset=utf-8`, `Content-Length: 11`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-store` | `Hello world` — 11 bytes, no trailing newline |
 | `HEAD /hello` | `200 OK` | identical to `GET /hello` | empty, as HTTP specifies for `HEAD` |
 | `GET /hello/`, `GET /hello//`, `GET /hello?a=1` | `200 OK` | as above | `Hello world` — trailing slashes are normalised away and a query string does not affect routing |
-| `GET /`, or any other path | `404 Not Found` | the same four headers, with `Content-Length: 9` | `Not Found` |
+| `GET /`, or any other request target | `404 Not Found` | the same four headers, with `Content-Length: 9` | `Not Found` |
 | `POST`, `PUT`, `DELETE`, or any other method on `/hello` | `405 Method Not Allowed` | the same four headers, plus `Allow: GET, HEAD`, with `Content-Length: 18` | `Method Not Allowed` |
+| `CONNECT /hello`, or `CONNECT` to any other target | `405 Method Not Allowed`, or `404 Not Found` for any other target | as the two rows above, plus `Connection: close` | `Method Not Allowed` or `Not Found` — and no tunnel |
 
-Those three answers are everything the endpoint has to say. Answering a disallowed method with `405` and an `Allow` header — rather than a `404` — is the distinction worth noticing: the resource does exist, just not for that method.
+Those three answers — `200`, `404` and `405` — are everything the endpoint has to say, whichever row of the table a request lands on. Answering a disallowed method with `405` and an `Allow` header — rather than a `404` — is the distinction worth noticing: the resource does exist, just not for that method.
 
-Try the failure cases yourself. The first prints `404`, the second the full `405` response with its `Allow` header:
+"Any other request target" is meant literally, and it is worth knowing what it covers, because a URL can be written more than one way. `/x/../hello`, `/./hello`, `/hello/.`, `/hello/%2e` and an absolute `http://host/hello` all *mean* `/hello` to a URL parser, and all of them answer `404` here: one endpoint means one request target, so the path is matched as the client sent it rather than as a parser would rewrite it. Trailing slashes are the one exception, listed in the table above. Ordinary clients are unaffected — a browser, `fetch` and `curl` all tidy the address before sending it, which is why reproducing this takes `curl --path-as-is`.
+
+`CONNECT` earns its own row because the runtime does not route it to the request listener at all: it is the method that asks for a tunnel, so it arrives on the server's own `connect` event, and a server that ignores that event closes the connection without answering. Silence is not one of this server's three answers, so a `CONNECT` is answered by the same rules as anything else — `405` with `Allow` on the route, `404` anywhere else — and the socket then closes without a tunnel.
+
+Try the failure cases yourself. In order: `404` for an unknown path, the full `405` response with its `Allow` header, `404` for a spelling of the endpoint the client did not send literally, and the `405` a `CONNECT` receives.
 
 ```bash
 curl -o /dev/null -w '%{http_code}\n' http://localhost:3000/
 curl -i -X POST http://localhost:3000/hello
+curl --path-as-is -o /dev/null -w '%{http_code}\n' http://localhost:3000/x/../hello
+curl -i --request-target '/hello' -X CONNECT http://localhost:3000
 ```
 
 ## Configuration
@@ -237,6 +256,8 @@ Each case is named for the request it actually makes, so the names are the exact
 
 ## Project layout
 
+Everything the repository tracks, rooted at the directory you cloned into:
+
 ```text
 .
 ├── .gitignore
@@ -246,14 +267,16 @@ Each case is named for the request it actually makes, so the names are the exact
 ├── package.json
 ├── src/
 │   └── server.js
+├── test.py
 └── tests/
     └── hello.test.js
 ```
 
 - `index.js` — the entry point named by `main`. Resolves the port, binds it, logs the ready line, translates bind failures into plain language, and handles `SIGINT` and `SIGTERM`.
-- `src/server.js` — the HTTP contract: route matching and the three response writers. Importing it is inert, binding no port and printing nothing, which is what lets the test suite create its own server.
+- `src/server.js` — the HTTP contract: route matching, the three response writers, and the `CONNECT` answer written straight to the socket. Importing it is inert, binding no port and printing nothing, which is what lets the test suite create its own server.
 - `tests/hello.test.js` — three automated cases, run against a real server on a port the operating system picks: the `GET /hello` status, body and content type; the root-path `404`; and the `405` with `Allow`.
 - `package.json` — package identity, the `start` and `test` scripts, the supported Node.js range, and the two empty dependency objects.
 - `package-lock.json` — the resolved install state: a root-only lockfile recording this package's own name, version, licence and Node.js range, with no dependency entries.
 - `.gitignore` — three rules, `node_modules/`, `*.log` and `.env`. The generated lockfile is deliberately tracked rather than ignored, so an install is reproducible from a clone.
 - `README.md` — this document.
+- `test.py` — **not part of this tutorial.** A pre-existing three-line Python script that predates the Node.js project in this repository and prints `Hello, world!` — a different string from the endpoint's payload, note the comma and the exclamation mark. It shares no code, no configuration and no data with anything above, runs as its own process (`python3 test.py`), and is left exactly as it was found. It takes no part in `npm test` either: `node --test` collects only `.js`, `.cjs` and `.mjs` files, so its name is the only test-like thing about it.

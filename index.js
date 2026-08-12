@@ -102,8 +102,12 @@ const server = createServer();
 
 /**
  * Shuts the process down in response to a termination signal: one line on
- * receipt, one when the server has finished closing, which is also the moment
- * the process ends with status `0`.
+ * receipt, and — for a server that was actually listening — one more when it has
+ * finished closing, which is also the moment the process ends with status `0`.
+ * Nothing claims a clean close otherwise, because a signal can arrive while the
+ * bind is still in flight or after it has failed, and announcing a successful
+ * close for a server that never listened would contradict the failure the
+ * `error` listener is about to report.
  *
  * It runs once. Closing takes as long as the requests still in flight take to
  * finish, and a reader watching that wait is quite likely to press Ctrl+C again;
@@ -125,7 +129,16 @@ function shutdown(signal) {
   // `close` is what makes this graceful: it stops the server accepting new
   // connections and calls back only once the requests already in flight have
   // finished, which is why the last word lives inside the callback.
-  server.close(() => {
+  server.close((error) => {
+    // An error here means one thing only: the server was not listening, so there
+    // was nothing to close. That happens when a signal arrives while the bind is
+    // still in flight, or after it has already failed — and in that case there is
+    // no clean close to announce and no success to claim. The exit status is left
+    // to the `error` listener below, which owns the failure and reports it.
+    if (error) {
+      return;
+    }
+
     console.log(timestamped('Server closed.'));
 
     // The status is set and the process left to end by itself, which it does as
